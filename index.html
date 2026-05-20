@@ -2393,19 +2393,19 @@ function bindEvents() {
   document.getElementById('btn-sync-save').onclick = async () => {
     const newToken = document.getElementById('cfg-gist-token').value.trim();
     const newGistId = document.getElementById('cfg-gist-id').value.trim();
-    const tokenChanged = newToken !== state.sync.token;
-    const gistChanged = newGistId !== state.sync.gistId;
     state.sync.token = newToken;
     state.sync.gistId = newGistId;
     state.sync.autoSync = document.getElementById('cfg-autosync').checked;
     save(false);
     updateSyncInfo();
     showToast('Configurações salvas ✓', 'success');
-    // Se acabou de conectar (token + gistId presentes), tenta sync automático
-    if (state.sync.token && state.sync.gistId && state.sync.autoSync) {
-      if (tokenChanged || gistChanged) {
-        // Mudou alguma credencial — dispara sync de startup
-        setTimeout(() => autoSyncOnStartup(), 300);
+    if (newToken) {
+      if (!newGistId) {
+        // Primeiro dispositivo: sobe os dados e preenche o Gist ID
+        setTimeout(() => syncUpload(), 300);
+      } else {
+        // Segundo dispositivo (ou já configurado): baixa os dados
+        setTimeout(() => syncDownload(), 300);
       }
       startPeriodicSync();
     }
