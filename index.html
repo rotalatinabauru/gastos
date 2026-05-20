@@ -700,23 +700,26 @@ tbody tr:hover { background: var(--bg); }
   </div>
 
   <div class="config-section">
-    <h3>☁️ Sincronização entre dispositivos (Gist do GitHub)</h3>
-    <p>Salve seus dados num Gist privado pra acessar de outro dispositivo. <a href="https://github.com/settings/tokens/new?scopes=gist&description=Gastos%20Pessoais" target="_blank" style="color:var(--blue)">Criar token aqui</a> (marca só "gist", expiração: no expiration)</p>
+    <h3>☁️ Sincronização automática entre dispositivos</h3>
+    <p>Seus dados ficam num Gist privado no GitHub. Ao abrir o app em qualquer dispositivo configurado, os dados são atualizados sozinhos. <a href="https://github.com/settings/tokens/new?scopes=gist&description=Gastos%20Pessoais" target="_blank" style="color:var(--blue)">Criar token aqui</a> (marca só "gist", expiração: "No expiration").</p>
+    <div class="tip-box" style="margin-bottom:12px">
+      🤖 <strong>Como funciona:</strong> ao abrir → baixa atualizações novas. Ao alterar → sobe em segundo plano (1.5s depois). A cada 1 minuto → verifica novamente. Quando dois dispositivos editam ao mesmo tempo, aparece um alerta pra você escolher qual versão manter.
+    </div>
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">🔑 Token (não compartilhe)</label>
         <input type="password" id="cfg-gist-token" class="form-control" placeholder="ghp_...">
       </div>
       <div class="form-group">
-        <label class="form-label">📦 Gist ID (preenche ao fazer primeiro upload)</label>
+        <label class="form-label">📦 Gist ID (preenchido automaticamente no 1º envio)</label>
         <input type="text" id="cfg-gist-id" class="form-control" placeholder="deixe em branco no 1º uso">
       </div>
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-      <button class="btn btn-primary" id="btn-sync-up">⬆️ Enviar dados</button>
-      <button class="btn btn-secondary" id="btn-sync-down">⬇️ Baixar dados</button>
-      <button class="btn btn-secondary" id="btn-sync-save">💾 Salvar config</button>
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-left:auto"><input type="checkbox" id="cfg-autosync"> Auto-sync ao alterar</label>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
+      <button class="btn btn-primary" id="btn-sync-save">💾 Salvar e sincronizar</button>
+      <button class="btn btn-secondary" id="btn-sync-up">⬆️ Forçar envio</button>
+      <button class="btn btn-secondary" id="btn-sync-down">⬇️ Forçar download</button>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-left:auto;cursor:pointer"><input type="checkbox" id="cfg-autosync" checked> Sincronização automática</label>
     </div>
     <div class="muted small" style="margin-top:10px" id="sync-info">Não configurado</div>
   </div>
@@ -878,26 +881,45 @@ const state = {
   filter: { search:'', month:'', category:'', method:'', card:'' },
   evolutionFilter: new Set(),
   theme: 'light',
-  sync: { token: '', gistId: '', autoSync: false, lastSync: null },
+  sync: { token: '', gistId: '', autoSync: true, lastSync: null, localRev: 0, syncedRev: 0, serverModifiedAt: null, modifiedAt: null },
+  isApplyingRemote: false,
   installPrompt: null,
   futureRange: 6
 };
 
 // ---------- Storage ----------
 function save(triggerSync = true) {
+  // Don't bump revision if we're applying remote data (avoid loops)
+  if (!state.isApplyingRemote && triggerSync) {
+    state.sync.localRev = (state.sync.localRev || 0) + 1;
+    state.sync.modifiedAt = new Date().toISOString();
+  }
   const data = {
     records: state.records, recorrentes: state.recorrentes, cards: state.cards,
     meta: state.meta, categories: state.categories, methods: state.methods,
-    theme: state.theme, sync: { token: state.sync.token, gistId: state.sync.gistId, autoSync: state.sync.autoSync }
+    theme: state.theme,
+    sync: {
+      token: state.sync.token, gistId: state.sync.gistId, autoSync: state.sync.autoSync,
+      lastSync: state.sync.lastSync, localRev: state.sync.localRev || 0,
+      syncedRev: state.sync.syncedRev || 0, serverModifiedAt: state.sync.serverModifiedAt,
+      modifiedAt: state.sync.modifiedAt
+    }
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (e) {
     showToast('Erro ao salvar: ' + e.message, 'error');
   }
-  if (triggerSync && state.sync.autoSync && state.sync.token && state.sync.gistId) {
-    syncUpload(true);
+  if (triggerSync && !state.isApplyingRemote && state.sync.autoSync && state.sync.token && state.sync.gistId) {
+    // Debounced upload (avoid hammering API on rapid edits)
+    scheduleAutoUpload();
   }
+}
+
+let autoUploadTimer = null;
+function scheduleAutoUpload() {
+  if (autoUploadTimer) clearTimeout(autoUploadTimer);
+  autoUploadTimer = setTimeout(() => { syncUpload(true); }, 1500);
 }
 
 function load() {
@@ -920,7 +942,13 @@ function load() {
     if (data.sync) {
       state.sync.token = data.sync.token || '';
       state.sync.gistId = data.sync.gistId || '';
-      state.sync.autoSync = !!data.sync.autoSync;
+      // Default autoSync to TRUE for users with token+gistId (so existing users get auto-sync on upgrade)
+      state.sync.autoSync = data.sync.autoSync !== undefined ? !!data.sync.autoSync : !!(data.sync.token && data.sync.gistId);
+      state.sync.lastSync = data.sync.lastSync || null;
+      state.sync.localRev = data.sync.localRev || 0;
+      state.sync.syncedRev = data.sync.syncedRev || 0;
+      state.sync.serverModifiedAt = data.sync.serverModifiedAt || null;
+      state.sync.modifiedAt = data.sync.modifiedAt || null;
     }
   } catch (e) {
     state.records = SEED_DATA.map((r,i) => ({...r, id: 'seed_'+i}));
@@ -983,19 +1011,29 @@ function toggleTheme() {
 }
 
 // ---------- Sync via Gist ----------
+function setSyncStatus(state_, text, autoHide = false) {
+  const el = document.getElementById('sync-status');
+  if (!el) return;
+  el.classList.remove('hide','ok','error','syncing');
+  if (state_) el.classList.add(state_);
+  el.textContent = text;
+  if (autoHide) setTimeout(() => el.classList.add('hide'), 3000);
+}
+
 async function syncUpload(silent = false) {
-  if (!state.sync.token) { if (!silent) showToast('Configure o token primeiro', 'error'); return; }
-  const status = document.getElementById('sync-status');
-  status.classList.remove('hide','ok','error');
-  status.classList.add('syncing');
-  status.textContent = '⏳ Enviando...';
+  if (!state.sync.token) { if (!silent) showToast('Configure o token primeiro', 'error'); return false; }
+  setSyncStatus('syncing', '⏳ Enviando...');
+  const nowISO = new Date().toISOString();
+  const uploadRev = state.sync.localRev || 0;
   const payload = {
     description: 'Gastos Pessoais - backup automático',
     public: false,
     files: { 'gastos_pessoais.json': { content: JSON.stringify({
       records: state.records, recorrentes: state.recorrentes, cards: state.cards,
       meta: state.meta, categories: state.categories, methods: state.methods,
-      _exportedAt: new Date().toISOString()
+      _exportedAt: nowISO,
+      _rev: uploadRev,
+      _modifiedAt: state.sync.modifiedAt || nowISO
     }, null, 2) } }
   };
   try {
@@ -1012,63 +1050,213 @@ async function syncUpload(silent = false) {
     }
     const data = await res.json();
     state.sync.gistId = data.id;
-    state.sync.lastSync = new Date().toISOString();
+    state.sync.syncedRev = uploadRev;
+    state.sync.serverModifiedAt = state.sync.modifiedAt || nowISO;
+    state.sync.lastSync = nowISO;
+    // Save without retriggering upload
+    state.isApplyingRemote = true;
     save(false);
+    state.isApplyingRemote = false;
     const idEl = document.getElementById('cfg-gist-id');
     if (idEl) idEl.value = data.id;
-    status.classList.remove('syncing');
-    status.classList.add('ok');
-    status.textContent = '✓ Sincronizado';
-    if (!silent) showToast('Dados enviados pra Gist ✓', 'success');
-    setTimeout(() => status.classList.add('hide'), 3000);
+    setSyncStatus('ok', '✓ Sincronizado', true);
+    if (!silent) showToast('Dados enviados ✓', 'success');
     updateSyncInfo();
+    return true;
   } catch (e) {
-    status.classList.remove('syncing');
-    status.classList.add('error');
-    status.textContent = '✗ Erro';
+    setSyncStatus('error', '✗ Erro ao enviar');
     if (!silent) showToast('Erro: ' + e.message, 'error');
+    return false;
   }
 }
 
-async function syncDownload() {
-  if (!state.sync.token || !state.sync.gistId) { showToast('Token e Gist ID são necessários', 'error'); return; }
-  const status = document.getElementById('sync-status');
-  status.classList.remove('hide','ok','error');
-  status.classList.add('syncing');
-  status.textContent = '⏳ Baixando...';
+async function fetchGistContent() {
+  if (!state.sync.token || !state.sync.gistId) return null;
+  const res = await fetch('https://api.github.com/gists/' + state.sync.gistId, {
+    headers: { 'Authorization': 'token ' + state.sync.token, 'Accept': 'application/vnd.github+json' }
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  const file = data.files['gastos_pessoais.json'];
+  if (!file) throw new Error('Arquivo não encontrado no Gist');
+  // O Gist pode retornar content truncated se for grande — buscar raw_url
+  let content;
+  if (file.truncated && file.raw_url) {
+    const rawRes = await fetch(file.raw_url);
+    content = await rawRes.text();
+  } else {
+    content = file.content;
+  }
+  return { parsed: JSON.parse(content), serverUpdatedAt: data.updated_at };
+}
+
+function applyRemoteData(content, sourceLabel = 'Gist') {
+  state.isApplyingRemote = true;
+  state.records = content.records || [];
+  state.recorrentes = content.recorrentes || [];
+  state.cards = content.cards || [];
+  if (content.meta) state.meta = content.meta;
+  if (content.categories) state.categories = content.categories;
+  if (content.methods) state.methods = content.methods;
+  // Update sync metadata to match server
+  state.sync.localRev = content._rev || 0;
+  state.sync.syncedRev = content._rev || 0;
+  state.sync.serverModifiedAt = content._modifiedAt || null;
+  state.sync.modifiedAt = content._modifiedAt || null;
+  state.sync.lastSync = new Date().toISOString();
+  save(false); // not triggerSync (still under isApplyingRemote)
+  state.isApplyingRemote = false;
+  showToast(`Dados atualizados do ${sourceLabel} ✓`, 'success');
+}
+
+async function syncDownload(forceConfirm = true) {
+  if (!state.sync.token || !state.sync.gistId) { showToast('Configure token e Gist ID primeiro', 'error'); return; }
+  setSyncStatus('syncing', '⏳ Baixando...');
   try {
-    const res = await fetch('https://api.github.com/gists/' + state.sync.gistId, {
-      headers: { 'Authorization': 'token ' + state.sync.token, 'Accept': 'application/vnd.github+json' }
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    const file = data.files['gastos_pessoais.json'];
-    if (!file) throw new Error('Arquivo não encontrado no Gist');
-    const content = JSON.parse(file.content);
-    showConfirm('Substituir dados locais?', `Isso substituirá os ${state.records.length} lançamentos atuais por ${(content.records||[]).length} do Gist.`, () => {
-      state.records = content.records || [];
-      state.recorrentes = content.recorrentes || [];
-      state.cards = content.cards || [];
-      if (content.meta) state.meta = content.meta;
-      if (content.categories) state.categories = content.categories;
-      if (content.methods) state.methods = content.methods;
-      save(false);
-      state.sync.lastSync = new Date().toISOString();
-      showToast('Dados baixados do Gist ✓', 'success');
-      updateSyncInfo();
-      switchTab('dashboard');
-    });
-    status.classList.remove('syncing');
-    status.classList.add('ok');
-    status.textContent = '✓';
-    setTimeout(() => status.classList.add('hide'), 2000);
+    const remote = await fetchGistContent();
+    if (!remote) throw new Error('Gist vazio');
+    const content = remote.parsed;
+    if (forceConfirm) {
+      showConfirm('Substituir dados locais?', `Local: ${state.records.length} lançamentos. Gist: ${(content.records||[]).length}. Esta ação substitui o local.`, () => {
+        applyRemoteData(content);
+        // Re-render current view
+        const active = document.querySelector('.nav-tab.active');
+        if (active) switchTab(active.dataset.tab);
+      });
+    } else {
+      applyRemoteData(content);
+      const active = document.querySelector('.nav-tab.active');
+      if (active) switchTab(active.dataset.tab);
+    }
+    setSyncStatus('ok', '✓', true);
   } catch (e) {
-    status.classList.remove('syncing');
-    status.classList.add('error');
-    status.textContent = '✗ Erro';
+    setSyncStatus('error', '✗ Erro');
     showToast('Erro: ' + e.message, 'error');
   }
 }
+
+// ---------- AUTO-SYNC ao abrir ----------
+// Detecta automaticamente se o Gist tem versão mais nova e aplica.
+// Se houver alterações locais não enviadas E o Gist também mudou, mostra modal de conflito.
+async function autoSyncOnStartup() {
+  if (!state.sync.token || !state.sync.gistId) return;
+  setSyncStatus('syncing', '⏳ Verificando...');
+  try {
+    const remote = await fetchGistContent();
+    if (!remote) { setSyncStatus(null, '', true); return; }
+    const content = remote.parsed;
+    const remoteRev = content._rev || 0;
+    const remoteModified = content._modifiedAt || remote.serverUpdatedAt;
+    const localRev = state.sync.localRev || 0;
+    const syncedRev = state.sync.syncedRev || 0;
+    const hasLocalChanges = localRev > syncedRev;
+    const remoteIsNewer = remoteRev > syncedRev || (state.sync.serverModifiedAt && remoteModified > state.sync.serverModifiedAt);
+
+    if (!hasLocalChanges && remoteIsNewer) {
+      // Caso simples: remoto tem coisa nova, eu não toquei em nada → aplica
+      applyRemoteData(content);
+      const active = document.querySelector('.nav-tab.active');
+      if (active) switchTab(active.dataset.tab);
+      setSyncStatus('ok', '✓ Atualizado', true);
+    } else if (hasLocalChanges && remoteIsNewer) {
+      // CONFLITO: ambos mudaram desde a última sync
+      setSyncStatus('error', '⚠️ Conflito');
+      showConflictModal(content);
+    } else if (hasLocalChanges && !remoteIsNewer) {
+      // Local tem alterações não enviadas → sobe
+      await syncUpload(true);
+    } else if (remoteRev === 0 && !content._modifiedAt) {
+      // Gist existe mas sem versionamento (legado): sobe nossa versão pra inicializar
+      await syncUpload(true);
+    } else {
+      // Tudo em dia
+      setSyncStatus('ok', '✓ Em dia', true);
+    }
+  } catch (e) {
+    // Offline ou erro de rede: usa local silenciosamente
+    setSyncStatus('error', '⚠️ Offline', true);
+    console.warn('Auto-sync falhou:', e.message);
+  }
+}
+
+function showConflictModal(remoteContent) {
+  const localCount = state.records.length;
+  const remoteCount = (remoteContent.records || []).length;
+  const localMod = state.sync.modifiedAt ? new Date(state.sync.modifiedAt).toLocaleString('pt-BR') : '?';
+  const remoteMod = remoteContent._modifiedAt ? new Date(remoteContent._modifiedAt).toLocaleString('pt-BR') : '?';
+  const html = `
+    <div class="modal-title">⚠️ Conflito de sincronização</div>
+    <p style="margin-bottom:12px;color:var(--text);font-size:13px">Você fez alterações neste dispositivo e em outro também. Escolha qual versão manter:</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
+      <div style="padding:12px;border:2px solid var(--blue);border-radius:8px;background:var(--blue-bg)">
+        <div style="font-weight:700;margin-bottom:6px">📱 Este dispositivo</div>
+        <div style="font-size:13px"><strong>${localCount}</strong> lançamentos</div>
+        <div class="muted small" style="margin-top:4px">Editado: ${localMod}</div>
+      </div>
+      <div style="padding:12px;border:2px solid var(--teal);border-radius:8px;background:var(--teal-bg)">
+        <div style="font-weight:700;margin-bottom:6px">☁️ Outro dispositivo</div>
+        <div style="font-size:13px"><strong>${remoteCount}</strong> lançamentos</div>
+        <div class="muted small" style="margin-top:4px">Editado: ${remoteMod}</div>
+      </div>
+    </div>
+    <div class="muted small" style="margin-bottom:16px">💡 <strong>Dica:</strong> antes de escolher, baixe um backup pela aba Config se quiser preservar as duas versões.</div>
+    <div class="form-actions" style="flex-direction:column;gap:8px">
+      <button class="btn btn-primary" id="conflict-keep-local" style="width:100%">📱 Manter este dispositivo (enviar pra nuvem)</button>
+      <button class="btn btn-teal" id="conflict-keep-remote" style="width:100%">☁️ Usar versão do outro dispositivo</button>
+      <button class="btn btn-secondary" id="conflict-decide-later" style="width:100%">Decidir depois</button>
+    </div>
+  `;
+  // Reutiliza modal-confirm
+  const modal = document.getElementById('modal-confirm');
+  modal.querySelector('.modal').innerHTML = html;
+  openModal('modal-confirm');
+  document.getElementById('conflict-keep-local').onclick = async () => {
+    closeModal('modal-confirm');
+    await syncUpload(false);
+  };
+  document.getElementById('conflict-keep-remote').onclick = () => {
+    closeModal('modal-confirm');
+    applyRemoteData(remoteContent);
+    const active = document.querySelector('.nav-tab.active');
+    if (active) switchTab(active.dataset.tab);
+  };
+  document.getElementById('conflict-decide-later').onclick = () => {
+    closeModal('modal-confirm');
+    setSyncStatus('error', '⚠️ Conflito pendente');
+    // Restaura o conteúdo do modal-confirm original
+    restoreConfirmModal();
+  };
+}
+
+function restoreConfirmModal() {
+  const modal = document.getElementById('modal-confirm');
+  modal.querySelector('.modal').innerHTML = `
+    <div class="modal-title" id="confirm-title">Confirmar</div>
+    <p id="confirm-message" class="muted" style="margin-bottom:20px"></p>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal('modal-confirm')">Cancelar</button>
+      <button class="btn btn-danger" id="confirm-yes">Confirmar</button>
+    </div>
+  `;
+}
+
+// Auto-sync periódico (a cada 60 segundos enquanto a aba estiver visível e ativa)
+let periodicSyncInterval = null;
+function startPeriodicSync() {
+  if (periodicSyncInterval) clearInterval(periodicSyncInterval);
+  periodicSyncInterval = setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    if (!state.sync.token || !state.sync.gistId || !state.sync.autoSync) return;
+    autoSyncOnStartup();
+  }, 60000);
+}
+
+// Sincroniza quando a aba volta a ficar visível
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.sync.token && state.sync.gistId && state.sync.autoSync) {
+    autoSyncOnStartup();
+  }
+});
 
 function updateSyncInfo() {
   const el = document.getElementById('sync-info');
@@ -1079,7 +1267,11 @@ function updateSyncInfo() {
     const d = new Date(state.sync.lastSync);
     msg += ` • Última sync: ${d.toLocaleString('pt-BR')}`;
   }
-  if (state.sync.autoSync) msg += ' • Auto-sync ATIVO';
+  const localRev = state.sync.localRev || 0;
+  const syncedRev = state.sync.syncedRev || 0;
+  if (localRev > syncedRev) msg += ` • ⏳ ${localRev - syncedRev} alteração(ões) pendente(s)`;
+  if (state.sync.autoSync) msg += ' • 🟢 Auto-sync ATIVO';
+  else msg += ' • 🔴 Auto-sync DESLIGADO';
   el.textContent = msg;
 }
 
@@ -2198,18 +2390,34 @@ function bindEvents() {
   // Sync
   document.getElementById('btn-sync-up').onclick = () => syncUpload(false);
   document.getElementById('btn-sync-down').onclick = () => syncDownload();
-  document.getElementById('btn-sync-save').onclick = () => {
-    state.sync.token = document.getElementById('cfg-gist-token').value.trim();
-    state.sync.gistId = document.getElementById('cfg-gist-id').value.trim();
+  document.getElementById('btn-sync-save').onclick = async () => {
+    const newToken = document.getElementById('cfg-gist-token').value.trim();
+    const newGistId = document.getElementById('cfg-gist-id').value.trim();
+    const tokenChanged = newToken !== state.sync.token;
+    const gistChanged = newGistId !== state.sync.gistId;
+    state.sync.token = newToken;
+    state.sync.gistId = newGistId;
     state.sync.autoSync = document.getElementById('cfg-autosync').checked;
     save(false);
     updateSyncInfo();
-    showToast('Configurações de sync salvas ✓', 'success');
+    showToast('Configurações salvas ✓', 'success');
+    // Se acabou de conectar (token + gistId presentes), tenta sync automático
+    if (state.sync.token && state.sync.gistId && state.sync.autoSync) {
+      if (tokenChanged || gistChanged) {
+        // Mudou alguma credencial — dispara sync de startup
+        setTimeout(() => autoSyncOnStartup(), 300);
+      }
+      startPeriodicSync();
+    }
   };
   document.getElementById('cfg-autosync').onchange = (e) => {
     state.sync.autoSync = e.target.checked;
     save(false);
     updateSyncInfo();
+    if (state.sync.autoSync && state.sync.token && state.sync.gistId) {
+      startPeriodicSync();
+      autoSyncOnStartup();
+    }
   };
 
   // Install
@@ -2433,6 +2641,11 @@ setupShortcuts();
 bindEvents();
 switchTab('dashboard');
 updateSyncInfo();
+// Auto-sync ao abrir (em segundo plano, não bloqueia a UI)
+if (state.sync.token && state.sync.gistId) {
+  setTimeout(() => autoSyncOnStartup(), 200);
+  startPeriodicSync();
+}
 
 </script>
 </body>
