@@ -72,9 +72,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .month-nav button:hover { background: var(--bg); color: var(--text); }
 .month-label { font-weight: 700; padding: 0 8px; font-size: 14px; min-width: 130px; text-align: center; }
 
-.charts-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 24px; }
+.charts-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 24px; align-items: start; }
 @media (max-width: 900px) { .charts-grid { grid-template-columns: 1fr; } }
-.chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; box-shadow: var(--shadow); }
+.chart-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; box-shadow: var(--shadow); overflow: hidden; }
 .chart-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
 .chart-sub { font-size: 12px; color: var(--label); margin-bottom: 16px; }
 
@@ -326,7 +326,7 @@ tbody tr:hover { background: var(--bg); }
     <div class="chart-card">
       <div class="chart-title">Por categoria</div>
       <div class="chart-sub">Distribuição do mês atual</div>
-      <canvas id="chart-categories" height="220"></canvas>
+      <div style="position:relative;height:260px"><canvas id="chart-categories"></canvas></div>
     </div>
   </div>
 
@@ -339,7 +339,7 @@ tbody tr:hover { background: var(--bg); }
     <div class="chart-card">
       <div class="chart-title">Por método</div>
       <div class="chart-sub">Como você gastou</div>
-      <canvas id="chart-methods" height="220"></canvas>
+      <div style="position:relative;height:220px"><canvas id="chart-methods"></canvas></div>
     </div>
   </div>
 </div>
@@ -633,14 +633,14 @@ tbody tr:hover { background: var(--bg); }
     <div class="chart-title">Evolução por categoria</div>
     <div class="chart-sub">Como cada categoria evoluiu ao longo dos meses</div>
     <div class="pill-row" id="cat-toggles" style="margin-top:12px"></div>
-    <canvas id="chart-evolution" height="120"></canvas>
+    <div style="position:relative;height:200px"><canvas id="chart-evolution"></canvas></div>
   </div>
 
   <div class="charts-grid">
     <div class="chart-card">
       <div class="chart-title">Ranking de categorias</div>
       <div class="chart-sub">Total acumulado</div>
-      <canvas id="chart-rank" height="220"></canvas>
+      <div style="position:relative;height:260px"><canvas id="chart-rank"></canvas></div>
     </div>
     <div class="chart-card">
       <div class="chart-title">🔁 Gastos recorrentes detectados (histórico)</div>
